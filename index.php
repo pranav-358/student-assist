@@ -38,6 +38,123 @@ if ($conn->connect_error) {
     $db_setup_error = "Database '$dbname' not selected.";
 }
 
+// =================================================================================
+// FAKE COMPLAINT DETECTION FUNCTIONS
+// =================================================================================
+
+function analyzeComplaint($complaint_text) {
+    $suspicious_patterns = [
+        'repetitive_words' => ['very very', 'really really', 'so so', 'too too'],
+        'excessive_caps' => '/[A-Z]{5,}/',
+        'excessive_punctuation' => '/[!?]{3,}/',
+        'spam_keywords' => ['free', 'win', 'prize', 'urgent', 'immediately', 'asap', 'click', 'link', 'http', 'money']
+    ];
+    
+    $risk_score = 0;
+    $flags = [];
+    
+    // 1. Check for repetitive words
+    foreach ($suspicious_patterns['repetitive_words'] as $pattern) {
+        if (stripos($complaint_text, $pattern) !== false) {
+            $risk_score += 10;
+            $flags[] = "Repetitive words detected";
+        }
+    }
+    
+    // 2. Check excessive capitalization
+    if (preg_match($suspicious_patterns['excessive_caps'], $complaint_text)) {
+        $risk_score += 15;
+        $flags[] = "Excessive capitalization";
+    }
+    
+    // 3. Check excessive punctuation
+    if (preg_match($suspicious_patterns['excessive_punctuation'], $complaint_text)) {
+        $risk_score += 10;
+        $flags[] = "Excessive punctuation";
+    }
+    
+    // 4. Check spam keywords
+    foreach ($suspicious_patterns['spam_keywords'] as $keyword) {
+        if (stripos($complaint_text, $keyword) !== false) {
+            $risk_score += 5;
+            $flags[] = "Suspicious keyword: $keyword";
+        }
+    }
+    
+    // 5. Length analysis (too short/long)
+    $length = strlen($complaint_text);
+    if ($length < 20) {
+        $risk_score += 15;
+        $flags[] = "Complaint too short";
+    } elseif ($length > 1000) {
+        $risk_score += 10;
+        $flags[] = "Complaint unusually long";
+    }
+    
+    // Determine risk level
+    if ($risk_score >= 30) {
+        $risk_level = 'HIGH';
+    } elseif ($risk_score >= 15) {
+        $risk_level = 'MEDIUM';
+    } else {
+        $risk_level = 'LOW';
+    }
+    
+    return [
+        'risk_score' => $risk_score,
+        'risk_level' => $risk_level,
+        'flags' => $flags
+    ];
+}
+
+function checkUserBehavior($user_id, $conn) {
+    $behavior_analysis = ['post_frequency' => 0];
+    
+    // Check posts in last hour
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM complaints WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)");
+    $stmt->bind_param("s", $user_id);
+    $stmt->execute();
+    $stmt->bind_result($recent_posts);
+    $stmt->fetch();
+    $stmt->close();
+    
+    if ($recent_posts > 3) {
+        $behavior_analysis['post_frequency'] = 20;
+    }
+    
+    return $behavior_analysis;
+}
+
+function checkSimilarComplaints($complaint_text, $conn) {
+    // Simple similarity check
+    $stmt = $conn->prepare("SELECT complaint_text FROM complaints WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) LIMIT 10");
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $max_similarity = 0;
+    while ($row = $result->fetch_assoc()) {
+        similar_text($complaint_text, $row['complaint_text'], $similarity);
+        if ($similarity > $max_similarity) {
+            $max_similarity = $similarity;
+        }
+    }
+    
+    return $max_similarity;
+}
+
+function getSuspiciousComplaints($conn) {
+    $sql = "SELECT * FROM complaints WHERE risk_score >= 25 OR is_auto_flagged = TRUE ORDER BY risk_score DESC";
+    $result = $conn->query($sql);
+    $suspicious = [];
+    
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $suspicious[] = $row;
+        }
+    }
+    return $suspicious;
+}
+
 // Authentication Management
 $is_student_logged_in = isset($_SESSION['student_anonymous_uid']);
 $student_anonymous_uid = $is_student_logged_in ? $_SESSION['student_anonymous_uid'] : null;
@@ -176,17 +293,32 @@ if (isset($_POST['post_complaint']) && $is_student_logged_in && !$is_user_blocke
             if ($post_count >= MAX_POSTS_PER_DAY) {
                 $_SESSION['post_message'] = "Limit Reached: You have already posted " . MAX_POSTS_PER_DAY . " complaints today.";
             } else {
+                // 4.2 Fake complaint detection + Insert new complaint
                 $status = 'Pending';
-                $stmt = $conn->prepare("INSERT INTO complaints (user_id, category, complaint_text, status, created_at) VALUES (?, ?, ?, ?, ?)");
-                if ($stmt) {
-                    $stmt->bind_param("sssss", $current_anon_uid, $category, $complaint_text, $status, $today);
-                    if ($stmt->execute()) {
-                        $_SESSION['post_message'] = "Complaint posted successfully! (Remaining: " . (MAX_POSTS_PER_DAY - $post_count - 1) . " today)";
-                    } else {
-                        $_SESSION['post_message'] = "Error posting complaint: " . $stmt->error;
+
+                // NEW: Fake complaint detection
+                $content_analysis = analyzeComplaint($complaint_text);
+                $behavior_analysis = checkUserBehavior($current_anon_uid, $conn);
+                $similarity_score = checkSimilarComplaints($complaint_text, $conn);
+
+                $total_risk_score = $content_analysis['risk_score'] + $behavior_analysis['post_frequency'];
+                $is_auto_flagged = $total_risk_score >= 25 || $similarity_score > 80;
+                $flags_json = json_encode($content_analysis['flags']);
+
+                // Insert with risk analysis
+                $stmt = $conn->prepare("INSERT INTO complaints (user_id, category, complaint_text, status, created_at, risk_score, risk_level, is_auto_flagged, flags, similarity_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssssisssi", $current_anon_uid, $category, $complaint_text, $status, $today, $total_risk_score, $content_analysis['risk_level'], $is_auto_flagged, $flags_json, $similarity_score);
+                
+                if ($stmt->execute()) {
+                    $message = "Complaint posted successfully!";
+                    if ($is_auto_flagged) {
+                        $message .= " (Flagged for review)";
                     }
-                    $stmt->close();
+                    $_SESSION['post_message'] = $message . " (Remaining: " . (MAX_POSTS_PER_DAY - $post_count - 1) . " today)";
+                } else {
+                    $_SESSION['post_message'] = "Error posting complaint: " . $stmt->error;
                 }
+                $stmt->close();
             }
         }
     }
@@ -229,7 +361,7 @@ if ($is_admin && isset($_POST['action_type']) && $conn && !$db_setup_error) {
 // Fetch Complaints
 $complaints = [];
 if ($conn && !$db_setup_error) {
-    $sql = "SELECT id, user_id, category, complaint_text, status, created_at, is_blocked FROM complaints 
+    $sql = "SELECT id, user_id, category, complaint_text, status, created_at, is_blocked, risk_score, risk_level, is_auto_flagged, flags, similarity_score FROM complaints 
             ORDER BY FIELD(status, 'Pending', 'Solved'), is_blocked DESC, created_at DESC";
     $result = $conn->query($sql);
 
@@ -852,6 +984,108 @@ if ($conn && !$db_setup_error) {
                             </div>
                         <?php endif; ?>
                     </div>
+
+                    <!-- ============================================= -->
+                    <!-- SUSPICIOUS COMPLAINTS SECTION -->
+                    <!-- ============================================= -->
+                    
+                    <?php
+                    $suspicious_complaints = getSuspiciousComplaints($conn);
+                    ?>
+                    
+                    <?php if (!empty($suspicious_complaints)): ?>
+                    <div class="card" style="margin-top: 2rem; border-left: 4px solid #ef4444;">
+                        <h2 class="section-title" style="border-color: #ef4444;">
+                            <i class="fas fa-exclamation-triangle" style="color: #ef4444;"></i>
+                            🚨 Suspicious Complaints (Auto-Flagged)
+                        </h2>
+                        
+                        <div class="complaint-grid">
+                            <?php foreach ($suspicious_complaints as $c): ?>
+                                <div class="complaint-card" style="border: 2px solid #ef4444; background: #fef2f2;">
+                                    <div class="complaint-header">
+                                        <div class="complaint-category"><?php echo htmlspecialchars($c['category']); ?></div>
+                                        <div>
+                                            <span class="status-badge" style="background: #ef4444; color: white;">
+                                                <i class="fas fa-flag"></i> RISK: <?php echo $c['risk_level']; ?>
+                                            </span>
+                                            <span class="status-badge" style="background: #f59e0b; color: white;">
+                                                Score: <?php echo $c['risk_score']; ?>
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="complaint-text">
+                                        <?php echo nl2br(htmlspecialchars($c['complaint_text'])); ?>
+                                    </div>
+
+                                    <!-- Show detection flags -->
+                                    <?php if (!empty($c['flags'])): ?>
+                                        <div style="margin: 1rem 0; padding: 0.75rem; background: #fee2e2; border-radius: 4px;">
+                                            <strong>🚩 Detection Flags:</strong><br>
+                                            <?php 
+                                            $flags = json_decode($c['flags'], true);
+                                            if (is_array($flags)) {
+                                                foreach ($flags as $flag): ?>
+                                                    <span style="display: inline-block; background: #fecaca; color: #991b1b; padding: 0.25rem 0.5rem; border-radius: 4px; margin: 0.25rem; font-size: 0.75rem;">
+                                                        <?php echo htmlspecialchars($flag); ?>
+                                                    </span>
+                                                <?php endforeach; 
+                                            }?>
+                                        </div>
+                                    <?php endif; ?>
+
+                                    <div class="complaint-footer">
+                                        <span><i class="fas fa-calendar"></i> <?php echo htmlspecialchars($c['created_at']); ?></span>
+                                        <span style="color: #ef4444; font-weight: 600;">
+                                            <i class="fas fa-robot"></i> Auto-Flagged
+                                        </span>
+                                    </div>
+
+                                    <!-- Admin actions -->
+                                    <div style="margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                        <?php if ($c['status'] === 'Pending'): ?>
+                                            <form method="POST">
+                                                <input type="hidden" name="action_id" value="<?php echo $c['id']; ?>">
+                                                <input type="hidden" name="action_type" value="solve">
+                                                <button type="submit" class="btn btn-success btn-small">
+                                                    <i class="fas fa-check"></i> Mark Solved
+                                                </button>
+                                            </form>
+                                        <?php else: ?>
+                                            <form method="POST">
+                                                <input type="hidden" name="action_id" value="<?php echo $c['id']; ?>">
+                                                <input type="hidden" name="action_type" value="pending">
+                                                <button type="submit" class="btn btn-warning btn-small">
+                                                    <i class="fas fa-redo"></i> Reopen
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
+
+                                        <button type="button" class="btn btn-danger btn-small" 
+                                            onclick="openBlockModal('<?php echo htmlspecialchars($c['user_id']); ?>')">
+                                            <i class="fas fa-ban"></i> Block User
+                                        </button>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                    <?php else: ?>
+                    <div class="card" style="margin-top: 2rem; border-left: 4px solid #10b981;">
+                        <h2 class="section-title" style="border-color: #10b981;">
+                            <i class="fas fa-check-circle" style="color: #10b981;"></i>
+                            ✅ Suspicious Complaints
+                        </h2>
+                        <div class="alert alert-success">
+                            <i class="fas fa-thumbs-up"></i> No suspicious complaints detected! System is clean.
+                        </div>
+                    </div>
+                    <?php endif; ?>
+                    <!-- ============================================= -->
+                    <!-- END SUSPICIOUS COMPLAINTS SECTION -->
+                    <!-- ============================================= -->
+                    
                 </div>
             </div>
         </div>
