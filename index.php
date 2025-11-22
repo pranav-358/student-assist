@@ -127,7 +127,7 @@ if (isset($_POST['student_login']) && $conn && !$db_setup_error) {
          $login_message = "Database error (Login): Could not prepare statement.";
     }
 }
-
+   
 if (isset($_POST['student_logout'])) {
     unset($_SESSION['student_anonymous_uid']);
     unset($_SESSION['student_public_id']);
