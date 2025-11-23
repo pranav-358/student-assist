@@ -27,3 +27,18 @@ It helps students speak up without revealing their identity — whether for comp
 1. Clone the repository:  
    ```bash
    git clone https://github.com/pranav-358/student-assist.git
+
+2. Navigate into the project directory:
+   ```bash
+   cd student-assist
+
+3. Import the database:
+    Open phpMyAdmin
+    Create a database (e.g., student_assist_db)
+    Import the .sql file from the project into this database
+
+4. Start your local server (XAMPP/WAMP/LAMP).
+
+5. Run the project in browser:
+
+http://localhost/student-assist/
