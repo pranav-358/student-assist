@@ -1,7 +1,5 @@
 # Student-Assist
 
-![Project Logo](/path/to/logo.png)  <!-- optional: add your logo or banner -->
-
 ## 🎓 Overview  
 **Student-Assist** is an anonymous complaint & feedback platform built especially for students.  
 It helps students speak up without revealing their identity — whether for complaints, feedback or suggestions — and gives administrators tools to monitor, manage & report efficiently.
