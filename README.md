@@ -2,7 +2,7 @@
 
 ## 🎓 Overview  
 **Student-Assist** is an anonymous complaint & feedback platform built especially for students.  
-It helps students speak up without revealing their identity — whether for complaints, feedback or suggestions — and gives administrators tools to monitor, manage & report efficiently.
+It helps students speak up without revealing their identity, whether for complaints, feedback or suggestions — and gives administrators tools to monitor, manage & report efficiently.
 
 ## 🧩 Key Features  
 - Submit complaints or feedback **anonymously** (student name hidden).  
@@ -40,3 +40,5 @@ It helps students speak up without revealing their identity — whether for comp
 5. Run the project in browser:
 
 http://localhost/student-assist/
+
+If this repository is helpful to you please give a Star⭐
